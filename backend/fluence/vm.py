@@ -160,6 +160,50 @@ def execute_command_on_vm(vm_id: str, command: str, key_path: str = "keys/fluenc
 
     return os.system(ssh_cmd)
 
+def upload_file_to_vm(vm_id: str, local_path: str, remote_path: str, key_path: str = "keys/id_ed25519", username: str = "ubuntu") -> int:
+    """
+    Upload a local file to the VM using scp and only OS commands.
+    Ensures the remote directory exists before copying.
+    Returns the exit code of the scp command (or earlier failure).
+    """
+    import shlex
+
+    vm = get_vm_by_id(vm_id)
+    public_ip = vm.get("publicIp")
+    if not public_ip:
+        raise ValueError("VM public IP not available")
+
+    abs_local = os.path.abspath(local_path)
+    if not os.path.exists(abs_local):
+        raise FileNotFoundError(f"Local file not found at {abs_local}")
+
+    abs_key_path = os.path.abspath(key_path)
+    if not os.path.exists(abs_key_path):
+        raise FileNotFoundError(f"SSH key not found at {abs_key_path}")
+
+    # Ensure private key permissions are acceptable for SSH
+    os.system(f"chmod 600 {shlex.quote(abs_key_path)}")
+
+    # Create remote directory
+    mkdir_cmd = (
+        f"ssh -i {shlex.quote(abs_key_path)} "
+        f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+        f"{shlex.quote(username)}@{shlex.quote(public_ip)} "
+        f"mkdir -p $(dirname {shlex.quote(remote_path)})"
+    )
+    mkdir_rc = os.system(mkdir_cmd)
+    if mkdir_rc != 0:
+        return mkdir_rc
+
+    # Copy file via scp
+    scp_cmd = (
+        f"scp -i {shlex.quote(abs_key_path)} "
+        f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+        f"{shlex.quote(abs_local)} "
+        f"{shlex.quote(username)}@{shlex.quote(public_ip)}:{shlex.quote(remote_path)}"
+    )
+    return os.system(scp_cmd)
+
 class FluenceVMManager:
     """Simple manager wrapper around Fluence VM deployment helpers."""
 
@@ -225,6 +269,12 @@ class FluenceVMManager:
         if self.api_key:
             os.environ["FLUENCE_API_KEY"] = self.api_key
         return execute_command_on_vm(vm_id, command, key_path=key_path, username=username)
+
+    def upload_file(self, vm_id: str, local_path: str, remote_path: str, key_path: str = "keys/id_ed25519", username: str = "ubuntu") -> int:
+        """Upload a local file to the VM using scp (OS commands only)."""
+        if self.api_key:
+            os.environ["FLUENCE_API_KEY"] = self.api_key
+        return upload_file_to_vm(vm_id, local_path, remote_path, key_path=key_path, username=username)
 
 # Example usage
 if __name__ == "__main__":

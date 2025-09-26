@@ -1,6 +1,8 @@
 from fluence.vm import FluenceVMManager
 import os
 import time
+from utils.docker_setup import build_docker_setup_command
+
 
 def main():
     # Ensure API key is available via environment; FluenceVMManager.connect propagates it
@@ -64,7 +66,61 @@ def main():
     ])
     print(f"Updated VM {target_vm_id} to name {new_name} with ports {open_ports}")
 
-    # 5) Optional: Delete the VM(s). Set DO_DELETE=True to enable.
+    # 5) Build and run Docker on the VM using a local Dockerfile if present
+    local_dockerfile = os.path.join(os.path.dirname(__file__), "docker", "Dockerfile")
+    remote_dir = "ubuntu-docker"
+    remote_dockerfile_path = f"~/{remote_dir}/Dockerfile"
+
+    if os.path.exists(local_dockerfile):
+        print("Uploading local Dockerfile to VM...")
+        # If the Dockerfile uses git clone from GitHub and a token is available, inject it
+        github_token = os.getenv("GITHUB_TOKEN")
+        upload_source = local_dockerfile
+        temp_path = None
+        try:
+            if github_token:
+                with open(local_dockerfile, "r", encoding="utf-8") as f:
+                    df_contents = f.read()
+                if "git clone https://github.com/" in df_contents:
+                    # Inject token into clone URL (GitHub recommended format)
+                    injected = df_contents.replace(
+                        "git clone https://github.com/",
+                        f"git clone https://x-access-token:{github_token}@github.com/",
+                    )
+                    import tempfile
+                    tf = tempfile.NamedTemporaryFile(delete=False, prefix="Dockerfile.", mode="w", encoding="utf-8")
+                    tf.write(injected)
+                    tf.flush()
+                    tf.close()
+                    temp_path = tf.name
+                    upload_source = temp_path
+            up_rc = vm.upload_file(target_vm_id, upload_source, remote_dockerfile_path, key_path=key_path, username="ubuntu")
+            print("Upload exit code:", up_rc)
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+
+        from utils.docker_setup import build_docker_setup_from_local
+        docker_cmd = build_docker_setup_from_local(remote_dockerfile_dir=remote_dir, exposed_port=3000)
+        print("Running remote Docker build/run from uploaded Dockerfile...")
+        docker_exit = vm.execute_on_vm(target_vm_id, docker_cmd, key_path=key_path, username="ubuntu")
+        print("Remote Docker setup exit code:", docker_exit)
+    else:
+        # Fallback to URL-based flow if local Dockerfile is not available
+        from utils.docker_setup import build_docker_setup_command
+        dockerfile_url = os.getenv("DOCKERFILE_URL") or input("Enter Dockerfile URL: ").strip()
+        if not dockerfile_url:
+            print("No Dockerfile provided; skipping remote Docker setup.")
+        else:
+            docker_cmd = build_docker_setup_command(dockerfile_url, workdir=remote_dir)
+            print("Running remote Docker setup on VM from URL...")
+            docker_exit = vm.execute_on_vm(target_vm_id, docker_cmd, key_path=key_path, username="ubuntu")
+            print("Remote Docker setup exit code:", docker_exit)
+
+    # 6) Optional: Delete the VM(s). Set DO_DELETE=True to enable.
     DO_DELETE = False
     if DO_DELETE:
         print(f"Deleting VM(s): {[target_vm_id]}")
