@@ -44,6 +44,78 @@ def save_to_history(deployment_data):
     with open(HISTORY_FILE, "w") as f:
         json.dump(history, f, indent=4)
 
+def get_active_vms():
+    """
+    Fetch all currently active VMs using the Fluence API.
+    Returns the parsed JSON response (array of VM objects).
+    """
+    api_key = os.getenv("FLUENCE_API_KEY")
+    if not api_key:
+        raise ValueError("FLUENCE_API_KEY environment variable not set")
+
+    url = "https://api.fluence.dev/vms/v3"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    response = requests.get(url, headers=headers)
+    if not (200 <= response.status_code < 300):
+        raise Exception(
+            f"API request failed with status {response.status_code}: {response.text}"
+        )
+
+    return response.json()
+
+def update_vms(updates: list[dict]) -> None:
+    """
+    Update VM properties (e.g., name, open ports) using the Fluence API.
+    Expects a list of update objects. Returns None on success (204).
+    """
+    api_key = os.getenv("FLUENCE_API_KEY")
+    if not api_key:
+        raise ValueError("FLUENCE_API_KEY environment variable not set")
+
+    url = "https://api.fluence.dev/vms/v3"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    body = {"updates": updates}
+    response = requests.patch(url, headers=headers, data=json.dumps(body))
+
+    # The API returns 204 No Content on success
+    if response.status_code != 204:
+        raise Exception(
+            f"API request failed with status {response.status_code}: {response.text}"
+        )
+
+
+def delete_vms(vm_ids: list[str]) -> None:
+    """
+    Delete one or multiple VMs by IDs using the Fluence API.
+    Returns None on success (204).
+    """
+    api_key = os.getenv("FLUENCE_API_KEY")
+    if not api_key:
+        raise ValueError("FLUENCE_API_KEY environment variable not set")
+
+    url = "https://api.fluence.dev/vms/v3"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    body = {"vmIds": vm_ids}
+    response = requests.delete(url, headers=headers, data=json.dumps(body))
+
+    # The API returns 204 No Content on success
+    if response.status_code != 204:
+        raise Exception(
+            f"API request failed with status {response.status_code}: {response.text}"
+        )
+
 class FluenceVMManager:
     """Simple manager wrapper around Fluence VM deployment helpers."""
 
@@ -76,7 +148,7 @@ class FluenceVMManager:
                     "name": "default-vm",
                     "openPorts": [
                         {"port": 80, "protocol": "tcp"},
-                        {"port": 8080, "protocol": "tcp"}
+                        {"port": 8080, "protocol": "tcp"},
                     ],
                     "hostname": None,
                     "osImage": "https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.img",
@@ -85,6 +157,24 @@ class FluenceVMManager:
             }
 
         return deploy_vms(request_body)
+
+    def list_vms(self) -> list:
+        """Return the list of active VMs for the current API key."""
+        if self.api_key:
+            os.environ["FLUENCE_API_KEY"] = self.api_key
+        return get_active_vms()
+
+    def update_vms(self, updates: list[dict]) -> None:
+        """Update VM name and/or open ports for one or more VMs."""
+        if self.api_key:
+            os.environ["FLUENCE_API_KEY"] = self.api_key
+        return update_vms(updates)
+
+    def delete_vms(self, vm_ids: list[str]) -> None:
+        """Delete one or more VMs by ID."""
+        if self.api_key:
+            os.environ["FLUENCE_API_KEY"] = self.api_key
+        return delete_vms(vm_ids)
 
 # Example usage
 if __name__ == "__main__":
