@@ -1,0 +1,4 @@
+
+*.pyc
+backend/.env
+backend/vm_deployments.json
