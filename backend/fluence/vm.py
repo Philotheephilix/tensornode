@@ -116,6 +116,50 @@ def delete_vms(vm_ids: list[str]) -> None:
             f"API request failed with status {response.status_code}: {response.text}"
         )
 
+def get_vm_by_id(vm_id: str) -> dict:
+    """
+    Fetch a single VM by id by listing all VMs and filtering locally.
+    Raises ValueError if the VM cannot be found.
+    """
+    vms = get_active_vms()
+    for vm in vms:
+        # Fluence examples show key as "id"; keep a fallback for "vmId"
+        if vm.get("id") == vm_id or vm.get("vmId") == vm_id:
+            return vm
+    raise ValueError(f"VM with id {vm_id} not found")
+
+
+def execute_command_on_vm(vm_id: str, command: str, key_path: str = "keys/fluence", username: str = "ubuntu") -> int:
+    """
+    Execute a shell command on the VM via SSH using only OS commands.
+    - Looks up VM public IP
+    - Uses SSH private key with -i from the provided keys folder path
+    - Returns the OS exit code from the ssh command
+    """
+    import shlex
+
+    vm = get_vm_by_id(vm_id)
+    public_ip = vm.get("publicIp")
+    if not public_ip:
+        raise ValueError("VM public IP not available")
+
+    abs_key_path = os.path.abspath(key_path)
+    if not os.path.exists(abs_key_path):
+        raise FileNotFoundError(f"SSH key not found at {abs_key_path}")
+
+    # Ensure private key permissions are acceptable for SSH
+    os.system(f"chmod 600 {shlex.quote(abs_key_path)}")
+
+    # Build SSH command using only OS commands; avoid host key prompts
+    ssh_cmd = (
+        f"ssh -i {shlex.quote(abs_key_path)} "
+        f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+        f"{shlex.quote(username)}@{shlex.quote(public_ip)} "
+        f"{shlex.quote(command)}"
+    )
+
+    return os.system(ssh_cmd)
+
 class FluenceVMManager:
     """Simple manager wrapper around Fluence VM deployment helpers."""
 
@@ -175,6 +219,12 @@ class FluenceVMManager:
         if self.api_key:
             os.environ["FLUENCE_API_KEY"] = self.api_key
         return delete_vms(vm_ids)
+
+    def execute_on_vm(self, vm_id: str, command: str, key_path: str = "keys/id_ed25519", username: str = "ubuntu") -> int:
+        """Execute a shell command on the specified VM via SSH using only OS commands."""
+        if self.api_key:
+            os.environ["FLUENCE_API_KEY"] = self.api_key
+        return execute_command_on_vm(vm_id, command, key_path=key_path, username=username)
 
 # Example usage
 if __name__ == "__main__":
