@@ -1,0 +1,10 @@
+[
+    {
+        "deployment": [
+            {
+                "vmId": "01998c79-da41-7e32-92f0-cd3ef079d545",
+                "vmName": "default-vm"
+            }
+        ]
+    }
+]

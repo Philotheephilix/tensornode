@@ -1,6 +1,8 @@
 import os
+import json
 import tempfile
 import logging
+from datetime import datetime
 from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
@@ -32,6 +34,163 @@ app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 
+# ------------------------
+# VM deployment persistence
+# ------------------------
+DEPLOYMENTS_FILE = os.path.join(os.path.dirname(__file__), "vm_deployments.json")
+
+
+def _utc_now_iso() -> str:
+    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def _ensure_list(value):
+    if isinstance(value, list):
+        return value
+    if value is None:
+        return []
+    return [value]
+
+
+def load_deployments() -> list[dict]:
+    """Load and normalize deployments list from JSON file."""
+    data: list[dict] = []
+    if os.path.exists(DEPLOYMENTS_FILE):
+        try:
+            with open(DEPLOYMENTS_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except Exception:
+            raw = []
+        # Normalize: flatten nested lists, keep only dict records
+        flat: list[dict] = []
+        for item in _ensure_list(raw):
+            if isinstance(item, list):
+                for sub in item:
+                    if isinstance(sub, dict):
+                        flat.append(sub)
+            elif isinstance(item, dict):
+                flat.append(item)
+        # Ensure schema fields
+        for rec in flat:
+            if "status" not in rec:
+                rec["status"] = "inactive"
+        data = flat
+    return data
+
+
+def save_deployments(items: list[dict]) -> None:
+    with open(DEPLOYMENTS_FILE, "w", encoding="utf-8") as f:
+        json.dump(items, f, indent=2)
+
+
+def _extract_vms_from_deploy_result(result: object) -> list[dict]:
+    """Best-effort extraction of VM identifiers and names from Fluence deploy response."""
+    vms: list[dict] = []
+    def add(rec: dict):
+        vm_id = rec.get("id") or rec.get("vmId") or rec.get("vm_id")
+        if vm_id:
+            vms.append({
+                "vmId": vm_id,
+                "vmName": rec.get("name") or rec.get("vmName") or "default-vm",
+            })
+    if isinstance(result, dict):
+        # common containers
+        for key in ("vms", "instances", "deployment", "items", "data"):
+            val = result.get(key)
+            if isinstance(val, list):
+                for x in val:
+                    if isinstance(x, dict):
+                        add(x)
+        # or a single vm directly
+        add(result)
+    elif isinstance(result, list):
+        for x in result:
+            if isinstance(x, dict):
+                add(x)
+    return vms
+
+
+def record_new_vms_as_inactive(deploy_result: object, wallet_address: str | None) -> list[dict]:
+    """Append newly created VMs to deployments file as inactive records."""
+    records = load_deployments()
+    extracted = _extract_vms_from_deploy_result(deploy_result)
+    created: list[dict] = []
+    for vm in extracted:
+        rec = {
+            "vmId": vm["vmId"],
+            "vmName": vm.get("vmName") or "default-vm",
+            "status": "inactive",
+            "walletAddress": wallet_address,
+            "createdAt": _utc_now_iso(),
+        }
+        records.append(rec)
+        created.append(rec)
+    if created:
+        save_deployments(records)
+    return created
+
+
+def allocate_vm_to_miner(miner_address: str, instance_name: str, manager: FluenceVMManager) -> dict:
+    """Allocate an inactive VM; create one if necessary, then mark active and assign ownership."""
+    deployments = load_deployments()
+    # Try reuse inactive
+    for rec in deployments:
+        if rec.get("status") == "inactive":
+            rec["status"] = "active"
+            rec["minerAddress"] = miner_address
+            rec["instanceName"] = instance_name
+            rec["assignedAt"] = _utc_now_iso()
+            save_deployments(deployments)
+            return rec
+
+    # None available: create a new VM and assign it
+    request_body = {
+        "constraints": {
+            "basicConfiguration": "cpu-4-ram-8gb-storage-25gb",
+            "additionalResources": {},
+            "hardware": None,
+            "datacenter": None,
+            "maxTotalPricePerEpochUsd": "1.5",
+        },
+        "instances": 1,
+        "vmConfiguration": {
+            "name": instance_name or "default-vm",
+            "openPorts": [
+                {"port": 22, "protocol": "tcp"},
+                {"port": 3000, "protocol": "tcp"},
+            ],
+            "hostname": None,
+            "osImage": "https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.img",
+            # Reuse the same SSH key as in fluence.vm default
+            "sshKeys": [
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICxtJrECnv5YDzeC/LWLjnAwjZeJ0JfpzZ5lPfME5T8a philosanjay5@gmail.com",
+            ],
+        },
+    }
+    deploy_result = manager.deploy_vm(request_body)
+    new_records = record_new_vms_as_inactive(deploy_result, wallet_address=None)
+    # Mark the first new VM as active for this miner
+    deployments = load_deployments()
+    assigned = None
+    new_ids = {r["vmId"] for r in new_records}
+    for rec in deployments:
+        if rec.get("vmId") in new_ids and rec.get("status") == "inactive":
+            rec["status"] = "active"
+            rec["minerAddress"] = miner_address
+            rec["instanceName"] = instance_name
+            rec["assignedAt"] = _utc_now_iso()
+            assigned = rec
+            break
+    if assigned is None and deployments:
+        assigned = deployments[-1]
+        assigned["status"] = "active"
+        assigned["minerAddress"] = miner_address
+        assigned["instanceName"] = instance_name
+        assigned["assignedAt"] = _utc_now_iso()
+    save_deployments(deployments)
+    return assigned
+
+
 @app.route("/deploy", methods=["POST"])
 def deploy():
     manager = create_manager()
@@ -40,7 +199,27 @@ def deploy():
     if isinstance(body, dict):
         wallet_address = body.get("walletAddress") or body.get("wallet_address")
     result = manager.deploy_vm(body, wallet_address=wallet_address)
+    try:
+        record_new_vms_as_inactive(result, wallet_address=wallet_address)
+    except Exception as e:
+        logging.warning("Failed to record deployments as inactive: %s", e)
     return jsonify(result), 201 if isinstance(result, (list, dict)) else 200
+
+
+@app.route("/allocate", methods=["POST"])
+def allocate():
+    manager = create_manager()
+    data = request.get_json(force=True) or {}
+    miner_address = (
+        data.get("minerAddress")
+        or data.get("walletAddress")
+        or data.get("address")
+    )
+    instance_name = data.get("instanceName") or data.get("name") or "default-vm"
+    if not miner_address:
+        return jsonify({"error": "minerAddress is required"}), 400
+    assigned = allocate_vm_to_miner(miner_address=miner_address, instance_name=instance_name, manager=manager)
+    return jsonify(assigned), 200
 
 
 @app.route("/vms", methods=["GET"])
@@ -197,6 +376,29 @@ def docker_stop(vm_id: str):
 
     cmd = build_docker_stop_command(container_name=container_name)
     code = manager.execute_on_vm(vm_id, cmd, key_path=key_path, username=username)
+
+    # If container stop succeeded, unassociate VM from miner in deployments registry
+    try:
+        if code == 0:
+            deployments = load_deployments()
+            changed = False
+            needle = str(vm_id).strip().lower()
+            for rec in deployments:
+                vmid = str(rec.get("vmId") or "").strip().lower()
+                altid = str(rec.get("id") or "").strip().lower()
+                if vmid == needle or altid == needle:
+                    rec["status"] = "inactive"
+                    rec.pop("minerAddress", None)
+                    rec.pop("instanceName", None)
+                    rec.pop("assignedAt", None)
+                    rec["releasedAt"] = _utc_now_iso()
+                    changed = True
+                    break
+            if changed:
+                save_deployments(deployments)
+    except Exception as e:
+        logging.warning("Failed to update deployments registry on stop: %s", e)
+
     return jsonify({"exit_code": code})
 
 

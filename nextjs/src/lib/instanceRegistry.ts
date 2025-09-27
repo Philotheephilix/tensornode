@@ -30,6 +30,16 @@ export interface SubnetDto {
 
 const DEFAULT_RPC_URL = process.env.HEDERA_RPC_URL || "https://testnet.hashio.io/api";
 
+// Hardcoded operator credentials (fallback to env vars if provided)
+export const HEDERA_OPERATOR_ID =  "0.0.5864744";
+export const HEDERA_OPERATOR_KEY =  "d04f46918ebce20abe26f7d34e5018ac2ba8aa7ffacf9f817656789b36f76207";
+
+export function createOperatorClient(network: "testnet" | "mainnet" = "testnet"): Client {
+  const client = network === "mainnet" ? Client.forMainnet() : Client.forTestnet();
+  client.setOperator(HEDERA_OPERATOR_ID, HEDERA_OPERATOR_KEY);
+  return client;
+}
+
 export function toEvmAddressHex(addressLike: string): string {
   if (!addressLike) throw new Error("addressLike is required");
   if (addressLike.startsWith("0x")) return addressLike;

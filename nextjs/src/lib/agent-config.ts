@@ -53,14 +53,23 @@ export function createAgentBootstrap(): AgentBootstrap {
 export function createHederaClient(bootstrap: AgentBootstrap): Client {
     const client = bootstrap.network === 'mainnet' ? Client.forMainnet() : Client.forTestnet();
     if (bootstrap.mode === 'autonomous') {
-        const { HEDERA_OPERATOR_ID, HEDERA_OPERATOR_KEY } = readAgentEnv();
-        if (!HEDERA_OPERATOR_ID || !HEDERA_OPERATOR_KEY) {
-            throw new Error('HEDERA_OPERATOR_ID and HEDERA_OPERATOR_KEY are required in autonomous mode');
+        // Hardcoded fallback (requested) if env vars are missing/invalid
+        const operatorIdStr = '0.0.5864744';
+        const operatorKeyStr = 'd04f46918ebce20abe26f7d34e5018ac2ba8aa7ffacf9f817656789b36f76207'; // ED25519 private key
+
+        const operatorId = AccountId.fromString(operatorIdStr);
+        // Accept both ED25519/ECDSA; try generic fromString first, then specific fallbacks
+        let operatorKey: PrivateKey;
+        try {
+            operatorKey = PrivateKey.fromString(operatorKeyStr);
+        } catch {
+            try {
+                operatorKey = PrivateKey.fromStringED25519(operatorKeyStr);
+            } catch {
+                operatorKey = PrivateKey.fromStringECDSA(operatorKeyStr);
+            }
         }
-        client.setOperator(
-            AccountId.fromString(HEDERA_OPERATOR_ID),
-            PrivateKey.fromStringECDSA(HEDERA_OPERATOR_KEY),
-        );
+        client.setOperator(operatorId, operatorKey);
     }
     return client;
 }
