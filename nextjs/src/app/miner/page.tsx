@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import WalletConnectPanel from "@/components/WalletConnect";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { ensureWalletConnector, getPairedAccountId } from "@/lib/walletconnect";
 
@@ -28,9 +30,19 @@ export default function MinerPage() {
   const [error, setError] = useState<string | null>(null);
   const [vms, setVms] = useState<Vm[]>([]);
   const [dockerFile, setDockerFile] = useState<File | null>(null);
+  const [dockerUrl, setDockerUrl] = useState("");
+  const [deployMode, setDeployMode] = useState<"upload" | "url">("upload");
   const [dockerPort, setDockerPort] = useState<number>(3000);
   const [creating, setCreating] = useState(false);
   const [deploying, setDeploying] = useState(false);
+  const [allocating, setAllocating] = useState(false);
+  const [instanceName, setInstanceName] = useState("");
+  const [stoppingId, setStoppingId] = useState<string>("");
+  const [terminatingId, setTerminatingId] = useState<string>("");
+  const instanceRegistryContractId = useMemo(
+    () => process.env.NEXT_PUBLIC_INSTANCE_REGISTRY_CONTRACT_ID || "",
+    []
+  );
 
   function loadMyVmIdsForAccount(acct: string | null): string[] {
     if (!acct) return [];
@@ -50,6 +62,17 @@ export default function MinerPage() {
       const key = `myMinerVmIds:${acct}`;
       const existing = loadMyVmIdsForAccount(acct);
       const next = Array.from(new Set([...existing, id]));
+      localStorage.setItem(key, JSON.stringify(next));
+    } catch {
+      // ignore
+    }
+  }
+
+  function removeMyVmIdForAccount(acct: string, id: string) {
+    try {
+      const key = `myMinerVmIds:${acct}`;
+      const existing = loadMyVmIdsForAccount(acct);
+      const next = existing.filter((x) => x !== id);
       localStorage.setItem(key, JSON.stringify(next));
     } catch {
       // ignore
@@ -155,30 +178,76 @@ export default function MinerPage() {
     }
   }
 
-  async function deployDockerToVm(vmId: string, file: File) {
+  async function allocateVmForMiner(name: string): Promise<string | null> {
+    if (!accountId) {
+      setError("Please connect your wallet first");
+      return null;
+    }
+    setAllocating(true);
+    setError(null);
+    try {
+      const res = await fetch(`${backendBaseUrl}/allocate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ minerAddress: accountId, instanceName: name || "default-vm" }),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`Allocate VM failed: ${res.status} ${text}`);
+      }
+      const rec = await res.json();
+      const id = (rec?.vmId || rec?.id || "") as string;
+      if (!id) return null;
+      saveMyVmIdForAccount(accountId, id);
+      await fetchVms();
+      return id;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      return null;
+    } finally {
+      setAllocating(false);
+    }
+  }
+
+  async function deployDockerToVm(vmId: string, fileOrUrl: File | string) {
     setDeploying(true);
     setError(null);
     try {
-      const form = new FormData();
-      form.append("file", file, file.name);
-      form.append("remote_dir", "ubuntu-docker");
-      form.append("port", String(dockerPort));
-      let lastErr: string | null = null;
-      for (let i = 0; i < 6; i += 1) {
-        const res = await fetch(`${backendBaseUrl}/vms/${encodeURIComponent(vmId)}/docker/local`, {
+      if (typeof fileOrUrl === "string") {
+        // URL-based deploy on VM
+        const res = await fetch(`${backendBaseUrl}/vms/${encodeURIComponent(vmId)}/docker/url`, {
           method: "POST",
-          body: form,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ dockerfile_url: fileOrUrl, workdir: "ubuntu-docker" }),
         });
-        if (res.ok) {
-          await res.json().catch(() => null);
-          lastErr = null;
-          break;
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          throw new Error(`Docker URL deploy failed: ${res.status} ${text}`);
         }
-        const text = await res.text().catch(() => "");
-        lastErr = `Docker deploy failed: ${res.status} ${text}`;
-        await new Promise((r) => setTimeout(r, 5000));
+        await res.json().catch(() => null);
+      } else {
+        // Local upload
+        const form = new FormData();
+        form.append("file", fileOrUrl, fileOrUrl.name);
+        form.append("remote_dir", "ubuntu-docker");
+        form.append("port", String(dockerPort));
+        let lastErr: string | null = null;
+        for (let i = 0; i < 6; i += 1) {
+          const res = await fetch(`${backendBaseUrl}/vms/${encodeURIComponent(vmId)}/docker/local`, {
+            method: "POST",
+            body: form,
+          });
+          if (res.ok) {
+            await res.json().catch(() => null);
+            lastErr = null;
+            break;
+          }
+          const text = await res.text().catch(() => "");
+          lastErr = `Docker deploy failed: ${res.status} ${text}`;
+          await new Promise((r) => setTimeout(r, 5000));
+        }
+        if (lastErr) throw new Error(lastErr);
       }
-      if (lastErr) throw new Error(lastErr);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -186,16 +255,110 @@ export default function MinerPage() {
     }
   }
 
+  async function registerInstanceOnChain(vmId: string) {
+    try {
+      if (!accountId) throw new Error("Wallet not connected");
+      if (!instanceRegistryContractId) throw new Error("Missing NEXT_PUBLIC_INSTANCE_REGISTRY_CONTRACT_ID");
+      // Fetch fresh VM list to get public IP
+      const res = await fetch(`${backendBaseUrl}/vms`, { cache: "no-store" });
+      if (!res.ok) throw new Error(`Failed to fetch VMs: ${res.status}`);
+      const fresh = (await res.json()) as Array<Record<string, any>>;
+      const vm = fresh.find(v => (v.id || v.vmId) === vmId) || {} as any;
+      const publicIp = vm.publicIp as string | undefined;
+      if (!publicIp) throw new Error("VM public IP not found yet");
+      const url = `http://${publicIp}:${dockerPort}`;
+      const body = {
+        contractId: instanceRegistryContractId,
+        subnetId: 1,
+        minerAddress: accountId,
+        state: true,
+        url,
+      };
+      const api = "/api/instance-registry/register-instance";
+      const reg = await fetch(api, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!reg.ok) {
+        const txt = await reg.text().catch(() => "");
+        throw new Error(`Register instance failed: ${reg.status} ${txt}`);
+      }
+      await reg.json().catch(() => null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function stopMiner(vmId: string) {
+    setStoppingId(vmId);
+    setError(null);
+    try {
+      const res = await fetch(`${backendBaseUrl}/vms/${encodeURIComponent(vmId)}/docker/stop`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`Stop miner failed: ${res.status} ${text}`);
+      }
+      await res.json().catch(() => null);
+      if (accountId) removeMyVmIdForAccount(accountId, vmId);
+      await fetchVms();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStoppingId("");
+    }
+  }
+
+  async function terminateVm(vmId: string) {
+    if (!vmId) return;
+    setError(null);
+    setTerminatingId(vmId);
+    try {
+      const res = await fetch(`${backendBaseUrl}/vms`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vmIds: [vmId] }),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`Terminate VM failed: ${res.status} ${text}`);
+      }
+      if (accountId) removeMyVmIdForAccount(accountId, vmId);
+      await fetchVms();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTerminatingId("");
+    }
+  }
+
   async function onCreateAndDeploy() {
-    if (!dockerFile) {
-      setError("Please choose a Dockerfile first");
+    if ((deployMode === "upload" && !dockerFile) || (deployMode === "url" && !dockerUrl.trim())) {
+      setError("Provide a Dockerfile or URL");
       return;
     }
     const vmId = await createNewVmForAccount();
     if (!vmId) return;
     if (accountId) saveMyVmIdForAccount(accountId, vmId);
-    await deployDockerToVm(vmId, dockerFile);
+    await deployDockerToVm(vmId, deployMode === "url" ? dockerUrl.trim() : (dockerFile as File));
     await fetchVms();
+    await registerInstanceOnChain(vmId);
+  }
+
+  async function onAllocateAndDeploy() {
+    if ((deployMode === "upload" && !dockerFile) || (deployMode === "url" && !dockerUrl.trim())) {
+      setError("Provide a Dockerfile or URL");
+      return;
+    }
+    const vmId = await allocateVmForMiner(instanceName.trim());
+    if (!vmId) return;
+    await deployDockerToVm(vmId, deployMode === "url" ? dockerUrl.trim() : (dockerFile as File));
+    await fetchVms();
+    await registerInstanceOnChain(vmId);
   }
 
   useEffect(() => {
@@ -239,6 +402,8 @@ export default function MinerPage() {
                   <th className="py-2 pr-3">Name</th>
                   <th className="py-2 pr-3">Public IP</th>
                   <th className="py-2 pr-3">API Endpoint</th>
+                  <th className="py-2 pr-3">Actions</th>
+                  <th className="py-2 pr-3">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -262,6 +427,16 @@ export default function MinerPage() {
                             <a className="text-blue-600 underline" href={apiUrl} target="_blank" rel="noreferrer">{apiUrl}</a>
                           ) : "—"}
                         </td>
+                        <td className="py-2 pr-3">
+                          <div className="flex items-center gap-2">
+                            <Button size="sm" onClick={() => id && stopMiner(id)} disabled={!id || stoppingId === id}>
+                              {stoppingId === id ? "Stopping..." : "Stop"}
+                            </Button>
+                            <Button size="sm" onClick={() => id && terminateVm(id)} disabled={!id || terminatingId === id}>
+                              {terminatingId === id ? "Terminating..." : "Terminate"}
+                            </Button>
+                          </div>
+                        </td>
                       </tr>
                     );
                   })
@@ -275,14 +450,47 @@ export default function MinerPage() {
           <div className="font-medium">Create & Deploy</div>
           <div className="mt-3 flex flex-col gap-3">
             <div className="flex flex-col gap-1">
-              <label className="text-xs text-gray-600">Dockerfile</label>
+              <label className="text-xs text-gray-600">Instance Name</label>
               <input
-                type="file"
-                accept=".Dockerfile, Dockerfile, text/*, application/octet-stream"
-                onChange={(e) => setDockerFile(e.target.files?.[0] || null)}
-                disabled={creating || deploying}
+                type="text"
+                placeholder="e.g. miner-alpha"
+                className="w-full rounded border px-2 py-1 text-sm"
+                value={instanceName}
+                onChange={(e) => setInstanceName(e.target.value)}
+                disabled={creating || deploying || allocating}
               />
             </div>
+            <Tabs value={deployMode} onValueChange={(v: any) => setDeployMode(v as any)}>
+              <TabsList>
+                <TabsTrigger value="upload">Upload</TabsTrigger>
+                <TabsTrigger value="url">URL</TabsTrigger>
+              </TabsList>
+              <div className="mt-3">
+                <TabsContent value="upload">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-gray-600">Dockerfile</label>
+                    <input
+                      type="file"
+                      accept=".Dockerfile, Dockerfile, text/*, application/octet-stream"
+                      onChange={(e) => setDockerFile(e.target.files?.[0] || null)}
+                      disabled={creating || deploying || allocating}
+                    />
+                  </div>
+                </TabsContent>
+                <TabsContent value="url">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-gray-600">Dockerfile URL</label>
+                    <Input
+                      type="url"
+                      placeholder="https://raw.githubusercontent.com/.../Dockerfile"
+                      value={dockerUrl}
+                      onChange={(e) => setDockerUrl(e.target.value)}
+                      disabled={creating || deploying || allocating}
+                    />
+                  </div>
+                </TabsContent>
+              </div>
+            </Tabs>
             <div className="flex items-center gap-2">
               <label className="text-xs text-gray-600" htmlFor="docker-port">Expose Port</label>
               <input
@@ -291,12 +499,15 @@ export default function MinerPage() {
                 className="w-24 rounded border px-2 py-1 text-sm"
                 value={dockerPort}
                 onChange={(e) => setDockerPort(Number(e.target.value) || 3000)}
-                disabled={creating || deploying}
+                disabled={creating || deploying || allocating}
               />
             </div>
             <div className="flex items-center gap-2">
               <Button onClick={onCreateAndDeploy} disabled={!dockerFile || creating || deploying}>
                 {creating ? "Creating VM..." : deploying ? "Deploying..." : "Create & Deploy"}
+              </Button>
+              <Button onClick={onAllocateAndDeploy} disabled={!dockerFile || allocating || deploying || !accountId}>
+                {allocating ? "Allocating..." : deploying ? "Deploying..." : "Allocate & Deploy"}
               </Button>
             </div>
           </div>

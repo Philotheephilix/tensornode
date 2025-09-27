@@ -3,8 +3,12 @@
 import { useEffect, useMemo, useState } from "react";
 import WalletConnectClient from "@/components/WalletConnectClient";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Card, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
+import { ensureWalletConnector, getPairedAccountId } from "@/lib/walletconnect";
 
 type Vm = {
   id?: string;
@@ -27,11 +31,28 @@ export default function MinerPage() {
   const [vms, setVms] = useState<Vm[]>([]);
   const [selectedVmId, setSelectedVmId] = useState<string>("");
   const [dockerFile, setDockerFile] = useState<File | null>(null);
+  const [dockerUrl, setDockerUrl] = useState("");
+  const [deployMode, setDeployMode] = useState<"upload" | "url">("upload");
   const [dockerPort, setDockerPort] = useState<number>(3000);
   const [creating, setCreating] = useState(false);
   const [deploying, setDeploying] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [terminatingId, setTerminatingId] = useState<string>("");
+  const [accountId, setAccountId] = useState<string | null>(null);
+  const [instanceName, setInstanceName] = useState("");
+  const [allocating, setAllocating] = useState(false);
+  const instanceRegistryContractId = useMemo(
+    () => process.env.NEXT_PUBLIC_INSTANCE_REGISTRY_CONTRACT_ID || "",
+    []
+  );
+  const [selectedNode, setSelectedNode] = useState<string>("llm");
+  const nodeTypes = [
+    { key: "llm", title: "LLM", desc: "Large Language Model", available: true },
+    { key: "translation", title: "Translation", desc: "Text Translation", available: false },
+    { key: "sst", title: "SST", desc: "Speech-to-Speech", available: false },
+    { key: "tts", title: "TTS", desc: "Text-to-Speech", available: false },
+    { key: "vision", title: "Vision", desc: "Image/Video", available: false },
+  ];
 
   const effectiveVmId = useMemo(() => {
     if (selectedVmId) return selectedVmId;
@@ -73,37 +94,120 @@ export default function MinerPage() {
     }
   }
 
+  useEffect(() => {
+    (async () => {
+      try {
+        await ensureWalletConnector("warn");
+        const acct = await getPairedAccountId();
+        setAccountId(acct);
+      } catch {
+        setAccountId(null);
+      }
+    })();
+  }, []);
+
+  async function onAllocate() {
+    if (!accountId) {
+      setError("Please connect your wallet first");
+      return;
+    }
+    setAllocating(true);
+    setError(null);
+    try {
+      const res = await fetch(`${backendBaseUrl}/allocate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ minerAddress: accountId, instanceName: instanceName.trim() || "subnet-node" }),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`Allocate failed: ${res.status} ${text}`);
+      }
+      await res.json().catch(() => null);
+      await fetchVms();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAllocating(false);
+    }
+  }
+
   async function onUploadDockerfile() {
     if (!effectiveVmId) {
       setError("Please select a VM first");
       return;
     }
-    if (!dockerFile) {
-      setError("Please choose a Dockerfile to upload");
+    if ((deployMode === "upload" && !dockerFile) || (deployMode === "url" && !dockerUrl.trim())) {
+      setError("Provide a Dockerfile or URL");
       return;
     }
     setDeploying(true);
     setError(null);
     try {
-      const form = new FormData();
-      form.append("file", dockerFile, dockerFile.name);
-      form.append("remote_dir", "ubuntu-docker");
-      form.append("port", String(dockerPort));
-
-      const res = await fetch(`${backendBaseUrl}/vms/${encodeURIComponent(effectiveVmId)}/docker/local`, {
-        method: "POST",
-        body: form,
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`Docker deploy failed: ${res.status} ${text}`);
+      if (deployMode === "url") {
+        const res = await fetch(`${backendBaseUrl}/vms/${encodeURIComponent(effectiveVmId)}/docker/url`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ dockerfile_url: dockerUrl.trim(), workdir: "ubuntu-docker" }),
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          throw new Error(`Docker URL deploy failed: ${res.status} ${text}`);
+        }
+        await res.json().catch(() => null);
+      } else if (dockerFile) {
+        const form = new FormData();
+        form.append("file", dockerFile, dockerFile.name);
+        form.append("remote_dir", "ubuntu-docker");
+        form.append("port", String(dockerPort));
+        const res = await fetch(`${backendBaseUrl}/vms/${encodeURIComponent(effectiveVmId)}/docker/local`, {
+          method: "POST",
+          body: form,
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          throw new Error(`Docker deploy failed: ${res.status} ${text}`);
+        }
+        await res.json().catch(() => null);
       }
-      // optional: handle response
-      await res.json().catch(() => null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setDeploying(false);
+    }
+  }
+
+  async function registerInstanceOnChain(vmId: string) {
+    try {
+      if (!accountId) throw new Error("Wallet not connected");
+      if (!instanceRegistryContractId) throw new Error("Missing NEXT_PUBLIC_INSTANCE_REGISTRY_CONTRACT_ID");
+      const res = await fetch(`${backendBaseUrl}/vms`, { cache: "no-store" });
+      if (!res.ok) throw new Error(`Failed to fetch VMs: ${res.status}`);
+      const fresh = (await res.json()) as Array<Record<string, any>>;
+      const vm = fresh.find(v => (v.id || v.vmId) === vmId) || {} as any;
+      const publicIp = vm.publicIp as string | undefined;
+      if (!publicIp) throw new Error("VM public IP not found yet");
+      const url = `http://${publicIp}:${dockerPort}`;
+      const body = {
+        contractId: instanceRegistryContractId,
+        subnetId: 1,
+        minerAddress: accountId,
+        state: true,
+        url,
+      };
+      const api = "/api/instance-registry/register-instance";
+      const reg = await fetch(api, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!reg.ok) {
+        const txt = await reg.text().catch(() => "");
+        throw new Error(`Register instance failed: ${reg.status} ${txt}`);
+      }
+      await reg.json().catch(() => null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -190,7 +294,7 @@ export default function MinerPage() {
       <header className="mx-auto w-full max-w-4xl">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="text-lg font-semibold">Miner Manager</div>
+            <div className="text-lg font-semibold">Subnet Node Manager</div>
             <Badge variant="secondary" className="text-xs">VMs: {vms.length}</Badge>
           </div>
           <div className="flex items-center gap-2">
@@ -208,12 +312,41 @@ export default function MinerPage() {
         )}
 
         <section className="rounded border p-4">
+          <div className="font-medium mb-3">Choose Your Node Type</div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {nodeTypes.map((nt) => {
+              const disabled = !nt.available;
+              const isActive = selectedNode === nt.key;
+              return (
+                <button
+                  key={nt.key}
+                  type="button"
+                  onClick={() => !disabled && setSelectedNode(nt.key)}
+                  className="text-left"
+                  disabled={disabled}
+                  aria-disabled={disabled}
+                >
+                  <Card className={`${disabled ? "opacity-50 grayscale cursor-not-allowed" : "cursor-pointer"} ${isActive ? "ring-2 ring-primary" : ""}`}>
+                    <CardHeader>
+                      <CardTitle>{nt.title}</CardTitle>
+                      <CardDescription>{nt.desc}</CardDescription>
+                    </CardHeader>
+                  </Card>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        {selectedNode === "llm" ? (
+          <>
+        <section className="rounded border p-4">
           <div className="flex items-center justify-between gap-3">
             <div className="font-medium">Connected Miners</div>
             <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={fetchVms} disabled={loading}>Refresh</Button>
-              <Button variant="outline" size="sm" onClick={onOpenSshPort} disabled={loading || !effectiveVmId}>Open SSH (22)</Button>
-              <Button size="sm" onClick={onCreateVm} disabled={creating}>{creating ? "Creating..." : "Create Miner (VM)"}</Button>
+              <Button size="sm" onClick={fetchVms} disabled={loading}>Refresh</Button>
+              <Button size="sm" onClick={onOpenSshPort} disabled={loading || !effectiveVmId}>Open SSH (22)</Button>
+              <Button size="sm" onClick={onCreateVm} disabled={creating}>{creating ? "Creating..." : "Create Miner Instance (VM)"}</Button>
             </div>
           </div>
 
@@ -265,7 +398,6 @@ export default function MinerPage() {
                         <td className="py-2 pr-3">{ports || "—"}</td>
                         <td className="py-2 pr-3">
                           <Button
-                            variant="destructive"
                             size="sm"
                             onClick={() => onTerminateVm(id)}
                             disabled={!id || isTerminating}
@@ -281,38 +413,13 @@ export default function MinerPage() {
             </table>
           </div>
         </section>
-
-        <section className="rounded border p-4">
-          <div className="font-medium">Deploy Docker to Selected Miner</div>
-          <div className="mt-3 flex flex-col gap-3">
-            <div className="flex flex-col gap-1">
-              <label className="text-xs text-gray-600">Dockerfile</label>
-              <input
-                type="file"
-                accept=".Dockerfile, Dockerfile, text/*, application/octet-stream"
-                onChange={(e) => setDockerFile(e.target.files?.[0] || null)}
-              />
-            </div>
-            <div className="flex items-center gap-2">
-              <label className="text-xs text-gray-600" htmlFor="docker-port">Expose Port</label>
-              <input
-                id="docker-port"
-                type="number"
-                className="w-24 rounded border px-2 py-1 text-sm"
-                value={dockerPort}
-                onChange={(e) => setDockerPort(Number(e.target.value) || 3000)}
-              />
-            </div>
-            <div className="flex items-center gap-2">
-              <Button onClick={onUploadDockerfile} disabled={deploying || !dockerFile || !effectiveVmId}>
-                {deploying ? "Deploying..." : "Deploy Docker"}
-              </Button>
-              <Button variant="outline" onClick={onStopMiner} disabled={stopping || !effectiveVmId}>
-                {stopping ? "Stopping..." : "Stop Miner"}
-              </Button>
-            </div>
-          </div>
-        </section>
+          </>
+        ) : (
+          <section className="rounded border p-4">
+            <div className="font-medium">Details</div>
+            <div className="text-sm text-muted-foreground mt-2">Selected node type is not yet available. Please choose LLM to proceed.</div>
+          </section>
+        )}
       </main>
     </div>
   );
