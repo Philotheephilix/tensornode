@@ -115,7 +115,7 @@ def build_docker_setup_from_local(remote_dockerfile_dir: str = "ubuntu-docker", 
         "test -f Dockerfile || { echo 'Dockerfile not found'; exit 1; }",
         "awk '/^[[:space:]]*(#|$)/{next} {print; exit}' Dockerfile | grep -Ei '^[[:space:]]*FROM\\b' >/dev/null || { echo 'File does not look like a Dockerfile'; head -n 10 Dockerfile; exit 1; }",
         f"docker rm -f my-ubuntu-container >/dev/null 2>&1 || true",
-        f"docker build -t my-ubuntu-image .",
+        f"docker build -t my-ubuntu-image ",
         f"docker run -d --name my-ubuntu-container -p {safe_port}:{safe_port} my-ubuntu-image",
         f"docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'",
     ])
@@ -128,4 +128,24 @@ def build_docker_setup_from_local(remote_dockerfile_dir: str = "ubuntu-docker", 
     ])
 
     cmd = f"{pre_cmds} && sg docker -c {shlex.quote(docker_group_cmds)}"
-    return cmd 
+    return cmd
+
+
+def build_docker_stop_command(container_name: str = "my-ubuntu-container") -> str:
+    """
+    Build a shell command that stops and removes the miner container safely.
+    """
+    safe_name = shlex.quote(container_name)
+    docker_group_cmds = "; ".join([
+        "set -e",
+        f"docker rm -f {safe_name} >/dev/null 2>&1 || true",
+        # Show containers after stopping
+        f"docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'",
+    ])
+    pre_cmds = "; ".join([
+        "sudo apt update",
+        "sudo apt install -y docker.io",
+        "sudo systemctl start docker || sudo service docker start || true",
+        "sudo usermod -aG docker \"$USER\"",
+    ])
+    return f"{pre_cmds} && sg docker -c {shlex.quote(docker_group_cmds)}" 

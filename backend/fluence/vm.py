@@ -4,9 +4,10 @@ import json
 
 HISTORY_FILE = "vm_deployments.json"
 
-def deploy_vms(request_body):
+def deploy_vms(request_body, wallet_address: str | None = None):
     """
     Deploy VMs using Fluence API and store deployment details in a JSON history file.
+    Optionally associate the deployment with a wallet address for tracking.
     """
     api_key = os.getenv("FLUENCE_API_KEY")
     if not api_key:
@@ -24,12 +25,13 @@ def deploy_vms(request_body):
         raise Exception(f"API request failed with status {response.status_code}: {response.text}")
 
     deployment_data = response.json()
-    save_to_history(deployment_data)
+    save_to_history(deployment_data, wallet_address=wallet_address)
     return deployment_data
 
-def save_to_history(deployment_data):
+def save_to_history(deployment_data, wallet_address: str | None = None):
     """
     Append deployment data to a single JSON history file.
+    If wallet_address is provided, include it alongside the deployment payload.
     """
     history = []
     if os.path.exists(HISTORY_FILE):
@@ -39,7 +41,13 @@ def save_to_history(deployment_data):
             except json.JSONDecodeError:
                 history = []
 
-    history.append(deployment_data)
+    record = {
+        "deployment": deployment_data,
+    }
+    if wallet_address:
+        record["walletAddress"] = wallet_address
+
+    history.append(record)
 
     with open(HISTORY_FILE, "w") as f:
         json.dump(history, f, indent=4)
@@ -217,10 +225,10 @@ class FluenceVMManager:
             os.environ["FLUENCE_API_KEY"] = self.api_key
         return True
 
-    def deploy_vm(self, request_body: dict | None = None) -> dict:
+    def deploy_vm(self, request_body: dict | None = None, wallet_address: str | None = None) -> dict:
         """
         Deploy a VM (or VMs). If no request_body is provided, a minimal default is used.
-        Returns the deployment data as returned by the Fluence API.
+        Returns the deployment data as returned by the Fluence API. Records wallet ownership if provided.
         """
         if request_body is None:
             request_body = {
@@ -235,8 +243,8 @@ class FluenceVMManager:
                 "vmConfiguration": {
                     "name": "default-vm",
                     "openPorts": [
-                        {"port": 80, "protocol": "tcp"},
-                        {"port": 8080, "protocol": "tcp"},
+                        {"port": 22, "protocol": "tcp"},
+                        {"port": 3000, "protocol": "tcp"},
                     ],
                     "hostname": None,
                     "osImage": "https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.img",
@@ -244,7 +252,7 @@ class FluenceVMManager:
                 },
             }
 
-        return deploy_vms(request_body)
+        return deploy_vms(request_body, wallet_address=wallet_address)
 
     def list_vms(self) -> list:
         """Return the list of active VMs for the current API key."""
@@ -259,21 +267,14 @@ class FluenceVMManager:
         return update_vms(updates)
 
     def delete_vms(self, vm_ids: list[str]) -> None:
-        """Delete one or more VMs by ID."""
         if self.api_key:
             os.environ["FLUENCE_API_KEY"] = self.api_key
         return delete_vms(vm_ids)
 
-    def execute_on_vm(self, vm_id: str, command: str, key_path: str = "keys/id_ed25519", username: str = "ubuntu") -> int:
-        """Execute a shell command on the specified VM via SSH using only OS commands."""
-        if self.api_key:
-            os.environ["FLUENCE_API_KEY"] = self.api_key
+    def execute_on_vm(self, vm_id: str, command: str, key_path: str = "keys/fluence", username: str = "ubuntu") -> int:
         return execute_command_on_vm(vm_id, command, key_path=key_path, username=username)
 
     def upload_file(self, vm_id: str, local_path: str, remote_path: str, key_path: str = "keys/id_ed25519", username: str = "ubuntu") -> int:
-        """Upload a local file to the VM using scp (OS commands only)."""
-        if self.api_key:
-            os.environ["FLUENCE_API_KEY"] = self.api_key
         return upload_file_to_vm(vm_id, local_path, remote_path, key_path=key_path, username=username)
 
 # Example usage
@@ -294,8 +295,8 @@ if __name__ == "__main__":
         "vmConfiguration": {
             "name": "web-server",
             "openPorts": [
-                {"port": 80, "protocol": "tcp"},
-                {"port": 8080, "protocol": "tcp"}
+                {"port": 22, "protocol": "tcp"},
+                {"port": 3000, "protocol": "tcp"}
             ],
             "hostname": "my-vm",
             "osImage": "https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.img",

@@ -17,6 +17,7 @@ from fluence.vm import (
 from utils.docker_setup import (
     build_docker_setup_command,
     build_docker_setup_from_local,
+    build_docker_stop_command,
 )
 
 
@@ -35,7 +36,10 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 def deploy():
     manager = create_manager()
     body = request.get_json(silent=True) or None
-    result = manager.deploy_vm(body)
+    wallet_address = None
+    if isinstance(body, dict):
+        wallet_address = body.get("walletAddress") or body.get("wallet_address")
+    result = manager.deploy_vm(body, wallet_address=wallet_address)
     return jsonify(result), 201 if isinstance(result, (list, dict)) else 200
 
 
@@ -181,6 +185,19 @@ def docker_from_local(vm_id: str):
             os.remove(local_tmp)
         except Exception:
             pass
+
+
+@app.route("/vms/<vm_id>/docker/stop", methods=["POST"])
+def docker_stop(vm_id: str):
+    manager = create_manager()
+    data = request.get_json(silent=True) or {}
+    container_name = data.get("container_name") or "my-ubuntu-container"
+    key_path = data.get("key_path") or os.path.join(os.path.dirname(__file__), "keys", "fluence")
+    username = data.get("username") or "ubuntu"
+
+    cmd = build_docker_stop_command(container_name=container_name)
+    code = manager.execute_on_vm(vm_id, cmd, key_path=key_path, username=username)
+    return jsonify({"exit_code": code})
 
 
 @app.route("/validator", methods=["POST"])

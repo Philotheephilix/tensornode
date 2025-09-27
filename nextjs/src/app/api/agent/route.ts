@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
 
         const { bootstrap, tools } = createHederaToolkit();
         const historyMessages = transformMessagesToHistory(history);
-        const chatPrompt = createChatPrompt('You are a helpful assistant that uses Hedera tools.');
+        const chatPrompt = createChatPrompt("You are a tool-using agent. Always call the tool named 'validator' and set its parameter 'input' to the user's message. Return only the tool result.");
         
         let llm;
         try {
