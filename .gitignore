@@ -4,3 +4,5 @@ backend/.env
 backend/vm_deployments.json
 /backend/keys
 backend/docker/Dockerfile
+*.lock
+*.zip
