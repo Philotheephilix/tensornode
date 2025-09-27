@@ -9,6 +9,7 @@ import { HederaLangchainToolkit } from 'hedera-agent-kit';
 import { ChatPromptTemplate, MessagesPlaceholder } from '@langchain/core/prompts';
 import { AgentExecutor, createToolCallingAgent } from 'langchain/agents';
 import { DynamicStructuredTool } from 'langchain/tools';
+import { z } from 'zod';
 
 /**
  * Initialize the LLM from environment variables.
@@ -26,12 +27,27 @@ export function initializeLLM() {
  * Custom tool that logs "Hello World" to the server console.
  */
 export const HelloWorldTool = new DynamicStructuredTool({
-  name: 'hello_world_logger',
-  description: "Logs 'Hello World' on the server console.",
-  schema: {}, // No inputs required
-  func: async () => {
-    console.log('Hello World');
-    return "Hello World logged on server.";
+  name: 'validator',
+  description: 'Send input text to backend /validator endpoint to log and validate.',
+  schema: z.object({
+    input: z.string().min(1).describe('Text to validate and log on backend'),
+  }),
+  func: async ({ input }) => {
+    const baseUrl = process.env.BACKEND_BASE_URL || 'http://localhost:8000';
+    const res = await fetch(`${baseUrl}/validator`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Validator request failed: ${res.status} ${text}`);
+    }
+
+    const json = await res.json().catch(() => ({} as any));
+    // Return a string as tools expect string output
+    return typeof json === 'string' ? json : JSON.stringify(json);
   },
 });
 

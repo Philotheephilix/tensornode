@@ -1,8 +1,11 @@
 import os
 import tempfile
+import logging
 from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
+
+logging.basicConfig(level=logging.INFO)
 
 from fluence.vm import (
     FluenceVMManager,
@@ -178,6 +181,16 @@ def docker_from_local(vm_id: str):
             os.remove(local_tmp)
         except Exception:
             pass
+
+
+@app.route("/validator", methods=["POST"])
+def validator():
+    data = request.get_json(force=True) or {}
+    user_input = data.get("input") or data.get("text") or data.get("message")
+    if not isinstance(user_input, str):
+        return jsonify({"error": "input must be a string"}), 400
+    logging.info("Validator input: %s", user_input)
+    return jsonify({"valid": True, "input": user_input})
 
 
 if __name__ == "__main__":
