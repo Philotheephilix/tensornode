@@ -27,7 +27,7 @@ module.exports = async () => {
   //Initialize a contract factory object
   //name of contract as first parameter
   //wallet/signer used for signing the contract calls/transactions with this contract
-  const Greeter = await ethers.getContractFactory("HederaTokenDistributor", wallet);
+  const Greeter = await ethers.getContractFactory("InstanceRegistry", wallet);
   //Using already initialized contract factory object with our contract, we can invoke deploy function to deploy the contract.
   //Accepts constructor parameters from our contract
   const greeter = await Greeter.deploy();
