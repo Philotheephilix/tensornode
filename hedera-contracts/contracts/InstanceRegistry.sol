@@ -4,64 +4,79 @@ pragma solidity ^0.8.9;
 contract InstanceRegistry {
     struct Instance {
         uint256 subnetId;
-        address minerAddress; // Hedera Account ID can be mapped to EVM address
-        bool state;           // true = active, false = inactive
+        address minerAddress;
+        bool state;
         string url;
     }
 
-    // Mapping miner address => instance details
-    mapping(address => Instance) public instances;
+    struct Subnet {
+        uint256 id;
+        string name;
+    }
 
-    // Track all registered miners for iteration
-    address[] private minerList;
+    mapping(uint256 => Subnet) public subnets;
+    uint256[] private subnetList;
 
-    /// @notice Register or update a miner instance
+    mapping(uint256 => address[]) private subnetMiners;         // subnetId → miners
+    mapping(address => uint256[]) private minerSubnets;         // miner → subnets
+    mapping(address => mapping(uint256 => bool)) private isSubnetMember;
+
+    mapping(address => mapping(uint256 => Instance)) public instances;
+
+    function registerSubnet(uint256 _subnetId, string calldata _name) external {
+        if (bytes(subnets[_subnetId].name).length == 0) {
+            subnetList.push(_subnetId);
+        }
+        subnets[_subnetId] = Subnet({id: _subnetId, name: _name});
+    }
+
     function registerInstance(
         uint256 _subnetId,
         address _minerAddress,
         bool _state,
         string calldata _url
     ) external {
-        // if first time registering, push to miner list
-        if (instances[_minerAddress].minerAddress == address(0)) {
-            minerList.push(_minerAddress);
-        }
+        require(bytes(subnets[_subnetId].name).length > 0, "Subnet not registered");
 
-        instances[_minerAddress] = Instance({
+        instances[_minerAddress][_subnetId] = Instance({
             subnetId: _subnetId,
             minerAddress: _minerAddress,
             state: _state,
             url: _url
         });
-    }
 
-    /// @notice Fetch all miner instances
-    function getAllInstances() external view returns (Instance[] memory) {
-        Instance[] memory result = new Instance[](minerList.length);
-        for (uint256 i = 0; i < minerList.length; i++) {
-            result[i] = instances[minerList[i]];
+        if (!isSubnetMember[_minerAddress][_subnetId]) {
+            subnetMiners[_subnetId].push(_minerAddress);
+            minerSubnets[_minerAddress].push(_subnetId);
+            isSubnetMember[_minerAddress][_subnetId] = true;
         }
-        return result;
     }
 
-    /// @notice Fetch only active miner instances
-    function getActiveInstances() external view returns (Instance[] memory) {
-        // Count active first
+    function getActiveInstancesBySubnet(uint256 _subnetId) external view returns (Instance[] memory) {
+        address[] memory miners = subnetMiners[_subnetId];
         uint256 activeCount = 0;
-        for (uint256 i = 0; i < minerList.length; i++) {
-            if (instances[minerList[i]].state) {
+
+        for (uint256 i = 0; i < miners.length; i++) {
+            if (instances[miners[i]][_subnetId].state) {
                 activeCount++;
             }
         }
 
-        // Collect active instances
         Instance[] memory result = new Instance[](activeCount);
         uint256 j = 0;
-        for (uint256 i = 0; i < minerList.length; i++) {
-            if (instances[minerList[i]].state) {
-                result[j] = instances[minerList[i]];
+        for (uint256 i = 0; i < miners.length; i++) {
+            if (instances[miners[i]][_subnetId].state) {
+                result[j] = instances[miners[i]][_subnetId];
                 j++;
             }
+        }
+        return result;
+    }
+
+    function getAllSubnets() external view returns (Subnet[] memory) {
+        Subnet[] memory result = new Subnet[](subnetList.length);
+        for (uint256 i = 0; i < subnetList.length; i++) {
+            result[i] = subnets[subnetList[i]];
         }
         return result;
     }
