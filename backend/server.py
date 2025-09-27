@@ -4,6 +4,7 @@ import tempfile
 import logging
 import time
 import ast
+import re
 from datetime import datetime
 from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
@@ -187,39 +188,75 @@ def _openai_score_answer(question: str, truth: str, candidate: str) -> int:
         import requests  # type: ignore
         api_key = os.getenv("OPENAI_API_KEY")
         model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        # Helper: numeric-aware heuristic (shared by API-missing and parse-fallback)
+        def _numeric_heuristic(t: str, c: str) -> int:
+            def normalize_minus(s: str) -> str:
+                return s.replace("\u2212", "-")
+            def extract_ints(s: str) -> list[str]:
+                s2 = normalize_minus(s)
+                return re.findall(r"-?\d+", s2)
+            t_nums = extract_ints(t or "")
+            c_nums = extract_ints(c or "")
+            try:
+                print({
+                    "numeric_debug": {
+                        "truth_nums": t_nums[:6] + (["…"] if len(t_nums) > 6 else []),
+                        "cand_nums": c_nums[:6] + (["…"] if len(c_nums) > 6 else []),
+                    }
+                })
+            except Exception:
+                pass
+            if t_nums:
+                matched = sum(1 for n in t_nums if n in set(c_nums))
+                total = len(t_nums)
+                if matched == total and total > 0:
+                    return 100
+                if total > 0:
+                    ratio = matched / total
+                    if ratio >= 0.66:
+                        return 75
+                    if ratio >= 0.33:
+                        return 40
+                    if matched > 0:
+                        return 25
+                    return 0
+            # Fallback lexical overlap if no numbers
+            t_l = (t or "").lower()
+            c_l = (c or "").lower()
+            if t_l and (t_l == c_l or t_l in c_l or c_l in t_l):
+                return 95
+            overlap = len(set(t_l.split()) & set(c_l.split()))
+            total = len(set(t_l.split())) or 1
+            return max(0, min(100, int(100 * overlap / total)))
+
         if not api_key:
-            # If API key missing, perform a basic lexical heuristic scoring
-            if truth and candidate:
-                overlap = len(set(truth.lower().split()) & set(candidate.lower().split()))
-                total = len(set(truth.lower().split())) or 1
-                return max(0, min(100, int(100 * overlap / total)))
-            return 0
+            return _numeric_heuristic(truth, candidate)
 
         if truth and str(truth).strip():
             system_prompt = (
                 "You are a strict evaluator. Compare the candidate answer to the ground truth. "
-                "Score 0-100. Penalize irrelevance and hallucinations. Favor concise correctness. "
-                "Only output JSON like {\"score\": 0-100}."
+                "Score 0-100 (integer). Penalize irrelevance and hallucinations. Favor concise correctness. "
+                "IMPORTANT: Respond with ONLY the integer (10-100). No words, no JSON, no punctuation."
             )
-            user_prompt = json.dumps({
-                "question": question,
-                "ground_truth": truth,
-                "candidate_answer": candidate,
-                "instructions": "Return only JSON with an integer 'score' between 0 and 100",
-            })
+            user_prompt = (
+                f"Question: {question}\n"
+                f"Ground truth: {truth}\n"
+                f"Candidate answer: {candidate}\n"
+                "Return only an integer between 10 and 100."
+            )
         else:
             # No ground truth available: score relevance and likely correctness wrt the question alone
             system_prompt = (
                 "You are a strict evaluator. No ground truth is provided. "
-                "Judge how relevant and likely-correct the candidate answer is to the question. "
-                "Score 0-100. Off-topic or non-answers should receive very low scores (<10). "
-                "Only output JSON like {\"score\": 0-100}."
+                "Judge relevance and likely-correctness of the candidate answer to the question. "
+                "Score 0-100 (integer). Off-topic or non-answers should receive very low scores (<10). "
+                "IMPORTANT: Respond with ONLY the integer (10-100). No words, no JSON, no punctuation."
             )
-            user_prompt = json.dumps({
-                "question": question,
-                "candidate_answer": candidate,
-                "instructions": "Return only JSON with an integer 'score' between 0 and 100",
-            })
+            user_prompt = (
+                f"Question: {question}\n"
+                f"Candidate answer: {candidate}\n"
+                "Return only an integer between 10 and 100."
+            )
 
         resp = requests.post(
             "https://api.openai.com/v1/chat/completions",
@@ -237,22 +274,93 @@ def _openai_score_answer(question: str, truth: str, candidate: str) -> int:
             },
             timeout=30,
         )
-        score: int = 0
+        score_val: int | None = None
         if resp.ok:
             body = resp.json()
             content = _coalesce(
                 ((((body or {}).get("choices") or [{}])[0].get("message") or {}).get("content")),
-                default="{}",
+                default="",
             )
+            try:
+                # Log raw LLM content (truncated)
+                preview = content if isinstance(content, str) else json.dumps(content)
+                if isinstance(preview, str) and len(preview) > 400:
+                    preview = preview[:400] + "…"
+                print({"llm_raw_content": preview})
+            except Exception:
+                pass
             if isinstance(content, str):
+                # Try JSON first
                 try:
                     data = json.loads(content)
                     raw = data.get("score")
                     if isinstance(raw, (int, float)):
-                        score = int(raw)
+                        score_val = int(raw)
                 except Exception:
-                    score = 0
-        return max(0, min(100, score))
+                    pass
+                # Regex fallback: extract first integer 0-100
+                if score_val is None:
+                    m = re.search(r"\b(100|[1-9]?\d)\b", content)
+                    if m:
+                        try:
+                            score_val = int(m.group(1))
+                        except Exception:
+                            score_val = None
+                    else:
+                        try:
+                            print({"llm_parse": "no-integer-found"})
+                        except Exception:
+                            pass
+        else:
+            try:
+                print({"llm_http_error": resp.status_code, "text": resp.text[:200]})
+            except Exception:
+                pass
+        if score_val is None:
+            # Heuristic fallback with numeric-aware comparison
+            def normalize_minus(s: str) -> str:
+                # Replace unicode minus with ASCII hyphen
+                return s.replace("\u2212", "-")
+
+            def extract_ints(s: str) -> list[str]:
+                s2 = normalize_minus(s)
+                return re.findall(r"-?\d+", s2)
+
+            truth_nums = extract_ints(truth or "")
+            cand_nums = extract_ints(candidate or "")
+
+            if truth_nums:
+                # Count how many truth numbers appear in candidate exactly
+                truth_set = truth_nums  # order matters for some tasks but here presence is enough
+                cand_set = set(cand_nums)
+                matched = sum(1 for n in truth_set if n in cand_set)
+                total = len(truth_set)
+                if matched == total and total > 0:
+                    score_val = 100
+                elif total > 0:
+                    # Partial credit scaling: 1/3 -> 40, 2/3 -> 75
+                    ratio = matched / total
+                    if ratio >= 0.66:
+                        score_val = 75
+                    elif ratio >= 0.33:
+                        score_val = 40
+                    elif matched > 0:
+                        score_val = 25
+                    else:
+                        score_val = 0
+                else:
+                    score_val = 0
+            else:
+                # Fallback: rough lexical overlap
+                truth_l = (truth or "").lower()
+                cand_l = (candidate or "").lower()
+                if truth_l and (truth_l == cand_l or truth_l in cand_l or cand_l in truth_l):
+                    score_val = 95
+                else:
+                    overlap = len(set(truth_l.split()) & set(cand_l.split()))
+                    total = len(set(truth_l.split())) or 1
+                    score_val = max(0, min(100, int(100 * overlap / total)))
+        return max(0, min(100, int(score_val)))
     except Exception:
         return 0
 

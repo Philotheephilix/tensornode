@@ -212,6 +212,7 @@ def main() -> int:
     parser.add_argument("--min-hours", type=int, default=24, help="Minimum interval between runs in hours (default: 24)")
     parser.add_argument("--master-topic", default=os.getenv("MASTER_SCORE_TOPIC", "0.0.6916998"), help="Master score topic ID (default: env MASTER_SCORE_TOPIC or 0.0.6916998)")
     parser.add_argument("--force", action="store_true", help="Force mint even if interval not elapsed")
+    parser.add_argument("--payout-only", dest="payout_only", action="store_true", help="Skip minting and only execute payouts now")
     args = parser.parse_args()
 
     deployment_path = os.path.abspath(args.deployment_path)
@@ -232,7 +233,7 @@ def main() -> int:
         return 4
 
     last_runs = deployment.get("mint", {}).get("lastRuns", []) or []
-    if not args.force and not _should_run(last_runs, args.min_hours):
+    if not args.force and not args.payout_only and not _should_run(last_runs, args.min_hours):
         print("[mint-tao] Skipping: min interval not elapsed yet")
         return 0
 
@@ -254,19 +255,24 @@ def main() -> int:
         print("[mint-tao] The 'requests' package is required. pip install requests")
         return 5
 
-    # 3) Mint total once
-    mint_url = f"{args.base_url.rstrip('/')}/api/token/mint"
-    mint_payload = {"tokenId": token_id, "amount": int(args.amount)}
-    print(f"[mint-tao] Minting at {mint_url} with payload: {mint_payload}")
-    resp = requests.post(mint_url, json=mint_payload, timeout=60)
-    try:
-        body = resp.json()
-    except Exception:
-        print(f"[mint-tao] Non-JSON response: HTTP {resp.status_code} {resp.text[:400]}")
-        return 6
-    if not resp.ok or not isinstance(body, dict) or not body.get("ok"):
-        print(f"[mint-tao] Mint error: {body}")
-        return 7
+    minted_this_run = False
+    if not args.payout_only:
+        # 3) Mint total once
+        mint_url = f"{args.base_url.rstrip('/')}/api/token/mint"
+        mint_payload = {"tokenId": token_id, "amount": int(args.amount)}
+        print(f"[mint-tao] Minting at {mint_url} with payload: {mint_payload}")
+        resp = requests.post(mint_url, json=mint_payload, timeout=60)
+        try:
+            body = resp.json()
+        except Exception:
+            print(f"[mint-tao] Non-JSON response: HTTP {resp.status_code} {resp.text[:400]}")
+            return 6
+        if not resp.ok or not isinstance(body, dict) or not body.get("ok"):
+            print(f"[mint-tao] Mint error: {body}")
+            return 7
+        minted_this_run = True
+    else:
+        print("[mint-tao] Skipping mint (payout-only mode)")
 
     # 4) Execute transfers for payouts using existing supply
     transfer_url = f"{args.base_url.rstrip('/')}/api/token/transfer"
@@ -293,7 +299,8 @@ def main() -> int:
     # 5) Record payout
     try:
         ts = _utc_now_iso()
-        deployment.setdefault("mint", {}).setdefault("lastRuns", []).append(ts)
+        if minted_this_run:
+            deployment.setdefault("mint", {}).setdefault("lastRuns", []).append(ts)
         payout_rec = {
             "timestamp": ts,
             "amount": int(args.amount),
