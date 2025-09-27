@@ -22,6 +22,19 @@ export async function POST(_req: NextRequest) {
         const topicId = receiptCreateTopicTx.topicId?.toString();
         const hashscanUrl = `https://hashscan.io/testnet/tx/${txCreateTopicId}`;
 
+        // After creating the topic, call backend scoring endpoint with topicId
+        try {
+            const backendBase = process.env.NEXT_PUBLIC_BACKEND_BASE_URL || 'http://localhost:8000';
+            await fetch(`${backendBase}/score`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ topicId }),
+                cache: 'no-store',
+            }).catch(() => undefined);
+        } catch {
+            // ignore scoring call failures to avoid failing the topic creation
+        }
+
         return createSuccessResponse({
             network: 'testnet',
             status: statusCreateTopicTx,

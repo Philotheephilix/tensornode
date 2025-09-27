@@ -53,7 +53,7 @@ def build_docker_setup_command(image_url: str, workdir: str = "ubuntu-docker") -
         "awk '/^[[:space:]]*(#|$)/{next} {print; exit}' Dockerfile | grep -Ei '^[[:space:]]*FROM\\b' >/dev/null || { echo 'Downloaded file does not look like a Dockerfile'; head -n 10 Dockerfile; exit 1; }",
         # Clean up any prior container with the same name to avoid conflicts
         f"docker rm -f nextjs-dev-container >/dev/null 2>&1 || true",
-        f"docker build -t nextjs-dev-image .",
+        f"docker build --no-cache -t nextjs-dev-image .",
         # Run detached to avoid hanging SSH; map port 3000 and ensure server binds to 0.0.0.0
         f"docker run -d --name nextjs-dev-container -p 3000:3000 -e PORT=3000 nextjs-dev-image",
         # Show running containers for confirmation
@@ -115,7 +115,8 @@ def build_docker_setup_from_local(remote_dockerfile_dir: str = "ubuntu-docker", 
         "test -f Dockerfile || { echo 'Dockerfile not found'; exit 1; }",
         "awk '/^[[:space:]]*(#|$)/{next} {print; exit}' Dockerfile | grep -Ei '^[[:space:]]*FROM\\b' >/dev/null || { echo 'File does not look like a Dockerfile'; head -n 10 Dockerfile; exit 1; }",
         f"docker rm -f nextjs-dev-container >/dev/null 2>&1 || true",
-        f"docker build -t nextjs-dev-image .",
+        f"docker stop $(docker ps -aq) 2>/dev/null && docker system prune -af --volumes",
+        f"docker build --no-cache -t nextjs-dev-image .",
         f"docker run -d --name nextjs-dev-container -p {safe_port}:{safe_port} -e PORT={safe_port} nextjs-dev-image",
         f"docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'",
     ])

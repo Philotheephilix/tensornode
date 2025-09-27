@@ -416,7 +416,7 @@ export default function MinerPage() {
                     const id = vm.id || vm.vmId || "";
                     const name = vm.name || vm.vmName || "";
                     const publicIp = vm.publicIp || "";
-                    const apiUrl = publicIp ? `http://${publicIp}:3000` : "";
+                    const apiUrl = publicIp ? `http://${publicIp}:3000/api/chat` : "";
                     return (
                       <tr key={id} className="border-b">
                         <td className="py-2 pr-3 font-mono text-xs">{id}</td>
