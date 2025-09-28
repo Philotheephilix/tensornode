@@ -1,0 +1,57 @@
+{
+  "title": "TensorNode Documentation",
+  "description": "Comprehensive documentation for the TensorNode decentralized AI network",
+  "author": "TensorNode Team",
+  "language": "en",
+  "gitbook": ">=3.0.0",
+  "root": ".",
+  "structure": {
+    "readme": "README.md",
+    "summary": "SUMMARY.md"
+  },
+  "plugins": [
+    "mermaid-gb3",
+    "code",
+    "prism",
+    "search",
+    "sharing",
+    "fontsettings",
+    "theme-default",
+    "expandable-chapters",
+    "anchors",
+    "copy-code-button",
+    "back-to-top-button",
+    "github",
+    "edit-link"
+  ],
+  "pluginsConfig": {
+    "github": {
+      "url": "https://github.com/your-org/tensornode"
+    },
+    "edit-link": {
+      "base": "https://github.com/your-org/tensornode/edit/main/docs",
+      "label": "Edit This Page"
+    },
+    "sharing": {
+      "facebook": false,
+      "twitter": true,
+      "google": false,
+      "weibo": false,
+      "instapaper": false,
+      "vk": false,
+      "all": ["twitter", "linkedin"]
+    },
+    "fontsettings": {
+      "theme": "white",
+      "family": "sans",
+      "size": 2
+    },
+    "theme-default": {
+      "showLevel": true
+    }
+  },
+  "variables": {
+    "version": "1.0.0",
+    "repository": "https://github.com/your-org/tensornode"
+  }
+}
