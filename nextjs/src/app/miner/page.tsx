@@ -8,6 +8,8 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { ensureWalletConnector, getPairedAccountId } from "@/lib/walletconnect";
+import { AlertTriangle } from "lucide-react";
+import { toast } from "@/components/ui/use-toast";
 
  type Vm = {
   id?: string;
@@ -43,6 +45,18 @@ export default function MinerPage() {
     () => process.env.NEXT_PUBLIC_INSTANCE_REGISTRY_CONTRACT_ID || "",
     []
   );
+
+  useEffect(() => {
+    if (!error) return;
+    toast({
+      title: "Action failed",
+      description: (
+        <div className="flex items-start gap-2"><AlertTriangle className="h-4 w-4 text-primary" /> <span>{error}</span></div>
+      ) as any,
+      className:
+        "rounded-2xl border border-primary bg-background/80 backdrop-blur-sm ring-1 ring-primary/20 shadow-lg shadow-[#EBB800]/40 [box-shadow:inset_0_1px_0_rgba(255,255,255,0.04)]",
+    });
+  }, [error]);
 
   function loadMyVmIdsForAccount(acct: string | null): string[] {
     if (!acct) return [];
@@ -385,13 +399,9 @@ export default function MinerPage() {
       </header>
 
       <main className="mx-auto mt-6 w-full max-w-4xl flex flex-col gap-6">
-        {error && (
-          <div className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-700">
-            {error}
-          </div>
-        )}
+        {/* Error is now shown via themed toast; no inline block */}
 
-        <section className="rounded border p-4">
+        <section className="rounded-2xl border p-4 bg-background/60 backdrop-blur-sm ring-1 ring-primary/10">
           <div className="font-medium mb-3">Your Miner Instances</div>
           <div className="text-xs text-gray-600 mb-2">Create a VM and deploy your Dockerfile using the form below. Only your instances are shown.</div>
           <div className="mt-3 overflow-x-auto">
@@ -446,7 +456,7 @@ export default function MinerPage() {
           </div>
         </section>
 
-        <section className="rounded border p-4">
+        <section className="rounded-2xl border p-4 bg-background/60 backdrop-blur-sm ring-1 ring-primary/10">
           <div className="font-medium">Create & Deploy</div>
           <div className="mt-3 flex flex-col gap-3">
             <div className="flex flex-col gap-1">

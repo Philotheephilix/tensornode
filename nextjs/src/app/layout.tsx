@@ -3,6 +3,7 @@ import { Geist_Mono } from "next/font/google";
 import localFont from "next/font/local";
 import "./globals.css";
 import { Header } from "@/components/header";
+import { Toaster } from "@/components/ui/toaster";
 
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
@@ -27,6 +28,7 @@ export default function RootLayout({
       >
         <Header />
         {children}
+        <Toaster />
       </body>
     </html>
   );

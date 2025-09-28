@@ -9,6 +9,8 @@ import { Card, CardHeader, CardTitle, CardDescription } from "@/components/ui/ca
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { ensureWalletConnector, getPairedAccountId } from "@/lib/walletconnect";
+import { AlertTriangle } from "lucide-react";
+import { toast } from "@/components/ui/use-toast";
 
 type Vm = {
   id?: string;
@@ -53,6 +55,18 @@ export default function MinerPage() {
     { key: "tts", title: "TTS", desc: "Text-to-Speech", available: false },
     { key: "vision", title: "Vision", desc: "Image/Video", available: false },
   ];
+
+  useEffect(() => {
+    if (!error) return;
+    toast({
+      title: "Action failed",
+      description: (
+        <div className="flex items-start gap-2"><AlertTriangle className="h-4 w-4 text-primary" /> <span>{error}</span></div>
+      ) as any,
+      className:
+        "rounded-2xl border border-primary bg-background/80 backdrop-blur-sm ring-1 ring-primary/20 shadow-lg shadow-[#EBB800]/40 [box-shadow:inset_0_1px_0_rgba(255,255,255,0.04)]",
+    });
+  }, [error]);
 
   const effectiveVmId = useMemo(() => {
     if (selectedVmId) return selectedVmId;
@@ -305,13 +319,9 @@ export default function MinerPage() {
       </header>
 
       <main className="mx-auto mt-6 w-full max-w-4xl flex flex-col gap-6">
-        {error && (
-          <div className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-700">
-            {error}
-          </div>
-        )}
+        {/* Error is now shown via themed toast; no inline block */}
 
-        <section className="rounded border p-4">
+        <section className="rounded-2xl border p-4 bg-background/60 backdrop-blur-sm ring-1 ring-primary/10">
           <div className="font-medium mb-3">Choose Your Node Type</div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {nodeTypes.map((nt) => {
@@ -326,7 +336,7 @@ export default function MinerPage() {
                   disabled={disabled}
                   aria-disabled={disabled}
                 >
-                  <Card className={`${disabled ? "opacity-50 grayscale cursor-not-allowed" : "cursor-pointer"} ${isActive ? "ring-2 ring-primary" : ""}`}>
+                  <Card className={`${disabled ? "opacity-50 grayscale cursor-not-allowed" : "cursor-pointer"} ${isActive ? "ring-2 ring-primary" : ""} transition-shadow hover:shadow-lg`}>
                     <CardHeader>
                       <CardTitle>{nt.title}</CardTitle>
                       <CardDescription>{nt.desc}</CardDescription>
@@ -340,7 +350,7 @@ export default function MinerPage() {
 
         {selectedNode === "llm" ? (
           <>
-        <section className="rounded border p-4">
+        <section className="rounded-2xl border p-4 bg-background/60 backdrop-blur-sm ring-1 ring-primary/10">
           <div className="flex items-center justify-between gap-3">
             <div className="font-medium">Connected Miners</div>
             <div className="flex items-center gap-2">
@@ -392,7 +402,7 @@ export default function MinerPage() {
                         <td className="py-2 pr-3">{publicIp || "—"}</td>
                         <td className="py-2 pr-3">
                           {apiUrl ? (
-                            <a className="text-blue-600 underline" href={apiUrl} target="_blank" rel="noreferrer">{apiUrl}</a>
+                            <a className="text-primary underline" href={apiUrl} target="_blank" rel="noreferrer">{apiUrl}</a>
                           ) : "—"}
                         </td>
                         <td className="py-2 pr-3">{ports || "—"}</td>
@@ -415,7 +425,7 @@ export default function MinerPage() {
         </section>
           </>
         ) : (
-          <section className="rounded border p-4">
+          <section className="rounded-2xl border p-4 bg-background/60 backdrop-blur-sm ring-1 ring-primary/10">
             <div className="font-medium">Details</div>
             <div className="text-sm text-muted-foreground mt-2">Selected node type is not yet available. Please choose LLM to proceed.</div>
           </section>
