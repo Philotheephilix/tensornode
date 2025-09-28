@@ -1,10 +1,24 @@
 ---
-description: Bittensor on Hedera
+description: Proof of Intelligence Network
+layout:
+  width: default
+  title:
+    visible: true
+  description:
+    visible: true
+  tableOfContents:
+    visible: true
+  outline:
+    visible: true
+  pagination:
+    visible: true
+  metadata:
+    visible: true
 ---
 
 # TensorNode
 
-## Proof of Intelligence Network
+## Bittensor on Hedera
 
 > **Decentralized AI with verifiable fairness on Hedera + Fluence**
 
