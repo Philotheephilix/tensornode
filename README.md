@@ -27,9 +27,13 @@ layout:
 ## Important Details
 
 MASTER_SCORE_TOPIC=0.0.6916998
+
 VALIDATOR_REGISTRY=0.0.6917106
+
 HEDERA_OPERATOR_KEY=ecdsa
+
 ACCOUNT_ID=0.0.5877428
+
 NEXT_PUBLIC_INSTANCE_REGISTRY_CONTRACT_ID=0.0.6915896
 
 TensorNode is a revolutionary decentralized AI infrastructure platform that democratizes access to artificial intelligence through a novel "Proof of Intelligence" consensus mechanism. Built on Hedera's ultra-efficient blockchain and Fluence's peer-to-peer compute fabric, TensorNode creates a fair, transparent, and accessible AI marketplace where every user validates and real performance is rewarded.
