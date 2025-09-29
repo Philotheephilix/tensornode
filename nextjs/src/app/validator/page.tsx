@@ -5,6 +5,8 @@ import WalletConnectClient from "@/components/WalletConnectClient";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
+import { AlertTriangle } from "lucide-react";
+import { toast } from "@/components/ui/use-toast";
 
 type Vm = {
   id?: string;
@@ -30,7 +32,9 @@ export default function ValidatorPage() {
   const [accountId, setAccountId] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<string | null>(null);
+  const [topicId, setTopicId] = useState<string | null>(null);
+  const [scores, setScores] = useState<{ walletId: string; score: number }[]>([]);
+  const [loadingScores, setLoadingScores] = useState(false);
   const [selectedSubnet, setSelectedSubnet] = useState<string>("llm");
   const [vms, setVms] = useState<Vm[]>([]);
   const [loadingVms, setLoadingVms] = useState(false);
@@ -45,6 +49,18 @@ export default function ValidatorPage() {
       { id: "vision", title: "Vision", description: "Image understanding and OCR" },
     ];
   }, []);
+
+  useEffect(() => {
+    if (!error) return;
+    toast({
+      title: "Action failed",
+      description: (
+        <div className="flex items-start gap-2"><AlertTriangle className="h-4 w-4 text-primary" /> <span>{error}</span></div>
+      ) as any,
+      className:
+        "rounded-2xl border border-primary bg-background/80 backdrop-blur-sm ring-1 ring-primary/20 shadow-lg shadow-[#EBB800]/40 [box-shadow:inset_0_1px_0_rgba(255,255,255,0.04)]",
+    });
+  }, [error]);
 
   const fetchVms = useCallback(async () => {
     setLoadingVms(true);
@@ -76,10 +92,49 @@ export default function ValidatorPage() {
     });
   }, [vms]);
 
+  async function pollScores(tid: string, attempts = 12, delayMs = 1000) {
+    setLoadingScores(true);
+    try {
+      for (let i = 0; i < attempts; i++) {
+        try {
+          const resp = await fetch(`/api/topic/messages?topicId=${encodeURIComponent(tid)}&limit=50&order=desc`, { cache: "no-store" });
+          if (!resp.ok) throw new Error(`Topic messages error: ${resp.status}`);
+          const body = await resp.json();
+          const messages = body?.data?.messages || body?.messages || [];
+          let found: { walletId: string; score: number }[] | null = null;
+          for (const m of messages) {
+            const text = typeof m?.message === "string" ? m.message : "";
+            if (!text) continue;
+            try {
+              const obj = JSON.parse(text);
+              const t = String(obj?.type || "").toLowerCase();
+              if ((t === "scores" || t === "final_scores") && Array.isArray(obj?.scores)) {
+                const arr = (obj.scores as any[]).map((s: any) => ({ walletId: String(s?.walletId || s?.wallet || ""), score: Number(s?.score || 0) }))
+                  .filter((s: any) => s.walletId);
+                if (arr.length > 0) {
+                  found = arr;
+                  break;
+                }
+              }
+            } catch {}
+          }
+          if (found) {
+            setScores(found);
+            return;
+          }
+        } catch {}
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    } finally {
+      setLoadingScores(false);
+    }
+  }
+
   async function onSubmit() {
     setLoading(true);
     setError(null);
-    setResult(null);
+    setScores([]);
+    setTopicId(null);
     try {
       const summarizedVms = activeVms.map((vm) => {
         const id = vm.id || vm.vmId || "";
@@ -109,8 +164,11 @@ export default function ValidatorPage() {
         throw new Error(`Validator request failed: ${res.status} ${text}`);
       }
       const json = await res.json();
-
-      setResult(JSON.stringify({ validatorResponse: json, payloadSent: payload }, null, 2));
+      const tid = (json && (json.topicId || json.topic_id)) || null;
+      if (tid) {
+        setTopicId(String(tid));
+        pollScores(String(tid)).catch(() => undefined);
+      }
 
       // Log this validator submission to on-chain topic with timestamp and wallet/account id
       try {
@@ -149,35 +207,31 @@ export default function ValidatorPage() {
       </header>
 
       <main className="mx-auto mt-6 w-full max-w-4xl flex flex-col gap-6">
-        {error && (
-          <div className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-700">
-            {error}
-          </div>
-        )}
+        {/* Error is now shown via themed toast; no inline block */}
 
-        <section className="rounded border p-4">
+        <section className="rounded-2xl border p-4 bg-background/60 backdrop-blur-sm ring-1 ring-primary/10">
           <div className="font-medium mb-3">Select Subnet</div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {subnets.length === 0 ? (
-              <div className="text-sm text-gray-600">No subnets available</div>
+              <div className="text-sm text-muted-foreground">No subnets available</div>
             ) : (
               subnets.map(sn => (
                 <button
                   key={sn.id}
-                  className={`rounded border p-3 text-left transition-shadow ${selectedSubnet === sn.id ? 'ring-2 ring-blue-500' : ''} ${sn.id !== 'llm' ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  className={`rounded border p-3 text-left transition-shadow ${selectedSubnet === sn.id ? 'ring-2 ring-primary' : ''} ${sn.id !== 'llm' ? 'opacity-50 cursor-not-allowed' : ''}`}
                   onClick={() => sn.id === 'llm' && setSelectedSubnet(sn.id)}
                   disabled={sn.id !== 'llm'}
                 >
                   <div className="font-medium">{sn.title}</div>
-                  <div className="text-xs text-gray-600">{sn.description}</div>
+                  <div className="text-xs text-muted-foreground">{sn.description}</div>
                 </button>
               ))
             )}
           </div>
         </section>
 
-        <section className="rounded border p-4">
-          <div className="font-medium mb-3">Available VMs</div>
+        <section className="rounded-2xl border p-4 bg-background/60 backdrop-blur-sm ring-1 ring-primary/10">
+          <div className="font-medium mb-3">Available Miners</div>
           <div className="mt-3 overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="text-left">
@@ -208,7 +262,7 @@ export default function ValidatorPage() {
                         <td className="py-2 pr-3">{publicIp || "—"}</td>
                         <td className="py-2 pr-3">
                           {apiUrl ? (
-                            <a className="text-blue-600 underline" href={apiUrl} target="_blank" rel="noreferrer">{apiUrl}</a>
+                            <a className="text-primary underline" href={apiUrl} target="_blank" rel="noreferrer">{apiUrl}</a>
                           ) : "—"}
                         </td>
                         <td className="py-2 pr-3">{wallet || "—"}</td>
@@ -221,31 +275,31 @@ export default function ValidatorPage() {
           </div>
         </section>
 
-        <section className="rounded border p-4">
-          <div className="font-medium mb-3">Inputs</div>
+        <section className="rounded-2xl border p-4 bg-background/60 backdrop-blur-sm ring-1 ring-primary/10">
+          <div className="font-medium mb-3">Run a Query</div>
           <div className="flex flex-col gap-3">
             <div className="flex flex-col gap-1">
-              <label className="text-xs text-gray-600">Validator Account ID</label>
+              <label className="text-xs text-muted-foreground">Validator Account ID</label>
               <input
-                className="w-full rounded border px-3 py-2 text-sm"
+                className="w-full rounded border px-2 py-1 text-sm"
                 value={accountId}
                 onChange={(e) => setAccountId(e.target.value)}
                 placeholder="e.g. 0.0.12345"
               />
             </div>
             <div className="flex flex-col gap-1">
-              <label className="text-xs text-gray-600">Query</label>
+              <label className="text-xs text-muted-foreground">Query</label>
               <textarea
-                className="min-h-[120px] w-full rounded border px-3 py-2 text-sm"
+                className="min-h-[120px] w-full rounded border px-2 py-1 text-sm"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Enter your query..."
               />
             </div>
             <div className="flex flex-col gap-1">
-              <label className="text-xs text-gray-600">Answer</label>
+              <label className="text-xs text-muted-foreground">Answer</label>
               <textarea
-                className="min-h-[120px] w-full rounded border px-3 py-2 text-sm"
+                className="min-h-[120px] w-full rounded border px-2 py-1 text-sm"
                 value={answer}
                 onChange={(e) => setAnswer(e.target.value)}
                 placeholder="Enter the expected answer (truth)..."
@@ -259,10 +313,33 @@ export default function ValidatorPage() {
           </div>
         </section>
 
-        {result && (
-          <section className="rounded border p-4">
-            <div className="font-medium mb-3">Result</div>
-            <pre className="whitespace-pre-wrap break-words text-sm">{result}</pre>
+        {(loadingScores || scores.length > 0) && (
+          <section className="rounded-2xl border p-4 bg-background/60 backdrop-blur-sm ring-1 ring-primary/10">
+            <div className="font-medium mb-3">Scores</div>
+            {loadingScores && scores.length === 0 ? (
+              <div className="py-3 text-sm text-muted-foreground">Waiting for scores...</div>
+            ) : scores.length === 0 ? (
+              <div className="py-3 text-sm text-muted-foreground">No scores found</div>
+            ) : (
+              <div className="mt-3 overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="text-left">
+                    <tr className="border-b">
+                      <th className="py-2 pr-3">Wallet</th>
+                      <th className="py-2 pr-3">Score</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {scores.map((s) => (
+                      <tr key={s.walletId} className="border-b">
+                        <td className="py-2 pr-3 font-mono text-xs">{s.walletId}</td>
+                        <td className="py-2 pr-3">{s.score}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </section>
         )}
       </main>
